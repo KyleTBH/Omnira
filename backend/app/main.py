@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import json
 from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +53,12 @@ class MaintenanceIn(BaseModel):
 class ReviewerIn(BaseModel):
     subject: str
     notes: str = Field(min_length=10)
+class ClassGradeIn(BaseModel):
+    class_id: int
+    student_id: int
+    score: float = Field(ge=0, le=100)
+class MeetingLinkIn(BaseModel):
+    url: str = Field(max_length=500)
 
 @app.get('/health')
 def health(): return {'ok': True}
@@ -85,6 +92,64 @@ def dashboard(x_user_id: int | None = Header(default=None)):
 def computers(x_user_id: int | None = Header(default=None)):
     require_user(x_user_id)
     with connection() as db: return [row(r) for r in db.execute('SELECT * FROM computers ORDER BY lab,label')]
+
+@app.get('/users')
+def list_users(x_user_id: int | None = Header(default=None)):
+    require_user(x_user_id, ['admin'])
+    with connection() as db:
+        return [row(r) for r in db.execute("SELECT id,name,email,role,course,department FROM users WHERE role IN ('student','professor') ORDER BY role,name")]
+
+@app.get('/users/students')
+def search_students(query: str = '', x_user_id: int | None = Header(default=None)):
+    require_user(x_user_id, ['admin'])
+    pattern = f"%{query.strip().lower()}%"
+    with connection() as db:
+        return [row(r) for r in db.execute(
+            "SELECT id,name,email FROM users WHERE role='student' AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ?) ORDER BY name LIMIT 8",
+            (pattern, pattern)
+        )]
+
+@app.get('/professor/classes')
+def professor_classes(x_user_id: int | None = Header(default=None)):
+    professor = require_user(x_user_id, ['professor'])
+    with connection() as db:
+        classes = [row(item) for item in db.execute(
+            'SELECT id,section_name,course,subject,day_of_week,start_time,end_time,meeting_url FROM professor_classes WHERE professor_id=? ORDER BY section_name,day_of_week,start_time',
+            (professor['id'],))]
+        for item in classes:
+            item['students'] = [row(student) for student in db.execute(
+                'SELECT u.id,u.name,u.email,g.score,g.updated_at FROM class_enrollments e JOIN users u ON u.id=e.student_id LEFT JOIN class_grades g ON g.class_id=e.class_id AND g.student_id=e.student_id WHERE e.class_id=? ORDER BY u.name',
+                (item['id'],))]
+    return classes
+
+@app.post('/professor/classes/{class_id}/meeting')
+def save_meeting_link(class_id: int, payload: MeetingLinkIn, x_user_id: int | None = Header(default=None)):
+    professor = require_user(x_user_id, ['professor'])
+    url = payload.url.strip()
+    parsed = urlparse(url)
+    if url and (parsed.scheme not in ('https','http') or not parsed.netloc):
+        raise HTTPException(400, 'Enter a valid http or https meeting link')
+    with connection() as db:
+        assigned = db.execute('SELECT id FROM professor_classes WHERE id=? AND professor_id=?', (class_id,professor['id'])).fetchone()
+        if not assigned: raise HTTPException(403, 'This class is not assigned to you')
+        db.execute('UPDATE professor_classes SET meeting_url=? WHERE id=?', (url or None,class_id))
+    return {'class_id':class_id,'meeting_url':url or None}
+
+@app.post('/professor/grades')
+def save_professor_grade(payload: ClassGradeIn, x_user_id: int | None = Header(default=None)):
+    professor = require_user(x_user_id, ['professor'])
+    with connection() as db:
+        assigned = db.execute('SELECT id FROM professor_classes WHERE id=? AND professor_id=?', (payload.class_id,professor['id'])).fetchone()
+        if not assigned: raise HTTPException(403, 'This class is not assigned to you')
+        enrolled = db.execute('SELECT student_id FROM class_enrollments WHERE class_id=? AND student_id=?', (payload.class_id,payload.student_id)).fetchone()
+        if not enrolled: raise HTTPException(403, 'This student is not in your class')
+        timestamp = now()
+        existing = db.execute('SELECT student_id FROM class_grades WHERE class_id=? AND student_id=?', (payload.class_id,payload.student_id)).fetchone()
+        if existing:
+            db.execute('UPDATE class_grades SET score=?,updated_at=? WHERE class_id=? AND student_id=?', (payload.score,timestamp,payload.class_id,payload.student_id))
+        else:
+            db.execute('INSERT INTO class_grades(class_id,student_id,score,updated_at) VALUES(?,?,?,?)', (payload.class_id,payload.student_id,payload.score,timestamp))
+    return {'class_id':payload.class_id,'student_id':payload.student_id,'score':payload.score,'updated_at':timestamp}
 
 @app.get('/reservations')
 def reservations(x_user_id: int | None = Header(default=None)):
