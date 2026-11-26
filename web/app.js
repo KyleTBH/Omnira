@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let user = JSON.parse(localStorage.getItem('omniraUser') || 'null');
+let user = window.omnira.user();
 let page = 'Dashboard';
 const navByRole = {
   student: ['Dashboard','Computers','Reservations','Sessions','Printing','Payments','AI Reviewer'],
@@ -59,8 +59,8 @@ async function render(){
     $('content').innerHTML=html;
   }catch(error){$('content').innerHTML=`<div class="panel error">${esc(error.message)}. Check that the FastAPI server is running.</div>`}
 }
-$('sign-in').onclick=async()=>{try{user=await window.omnira.request('/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})});localStorage.setItem('omniraUser',JSON.stringify(user));page='Dashboard';$('login-error').textContent='';render()}catch(e){$('login-error').textContent=e.message}};
-$('logout').onclick=()=>{user=null;localStorage.removeItem('omniraUser');renderShell()};
+$('sign-in').onclick=async()=>{try{user=await window.omnira.request('/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})});page='Dashboard';$('login-error').textContent='';render()}catch(e){$('login-error').textContent=e.message}};
+$('logout').onclick=async()=>{try{await window.omnira.request('/auth/logout',{method:'POST'})}catch{}user=null;window.omnira.clearSession();renderShell()};
 document.addEventListener('click',async e=>{const nav=e.target.closest('[data-page]');if(nav){page=nav.dataset.page;render();return}const action=e.target.closest('[data-action]');if(!action)return;try{let msg='Done';if(action.dataset.action==='cancel')await post(`/reservations/${action.dataset.id}/cancel`);if(action.dataset.action==='end'){const r=await post(`/sessions/${action.dataset.id}/end`);msg=`Session ended. Charge: ₱${r.amount.toFixed(2)}`}if(action.dataset.action==='complete')await post(`/printing/${action.dataset.id}/complete`);if(action.dataset.action==='pay'){const r=await post('/payments',{item_type:action.dataset.type,item_id:Number(action.dataset.id),method:'demo_qr'});msg=`Demo payment recorded. Receipt #${r.receipt_id}`}if(action.dataset.action==='receipt'){const r=await api(`/receipts/${action.dataset.id}`);msg=`${r.receipt_no}: ₱${r.amount.toFixed(2)} · ${r.note}`}await render();notice(msg)}catch(err){notice(err.message)}});
 document.addEventListener('submit',async e=>{e.preventDefault();const form=e.target;const v=Object.fromEntries(new FormData(form));try{let msg='Saved';if(form.id==='reserve-form')await post('/reservations',{computer_id:Number(v.computer_id),starts_at:new Date(v.starts_at).toISOString(),ends_at:new Date(v.ends_at).toISOString()});if(form.id==='session-form')await post('/sessions/start',{computer_id:Number(v.computer_id)});if(form.id==='print-form'){const r=await post('/printing',{filename:v.filename,pages:Number(v.pages),copies:Number(v.copies)});msg=`Print request saved. Charge: ₱${r.amount.toFixed(2)}`}if(form.id==='maintenance-form')await post('/maintenance',{computer_id:Number(v.computer_id),note:v.note});if(form.id==='reviewer-form'){const r=await post('/reviewer',{subject:v.subject,notes:v.notes});$('reviewer-result').innerHTML=r.reviewer.map(esc).join('<br><br>');return}await render();notice(msg)}catch(err){notice(err.message)}});
 render();

@@ -57,18 +57,6 @@ function transitionPage(update) {
     setTimeout(()=>{screen.classList.remove('page-entering');pageTransitioning=false;},330);
   },150);
 }
-let demoVerified = false;
-let recaptchaWidget = null;
-function showRecaptcha() {
-  const area=$('recaptcha-area');
-  if(!area) return;
-  const siteKey=window.OMNIRA_RECAPTCHA_SITE_KEY;
-  if(!siteKey) {area.innerHTML='<label class="demo-verify"><input type="checkbox" id="demo-verified"> <span>Verify for preview</span><small>Demo check · live reCAPTCHA needs keys</small></label>';return;}
-  area.innerHTML='<div id="recaptcha-widget"></div>';
-  const draw=()=>{if(authView==='login' && window.grecaptcha?.render) recaptchaWidget=grecaptcha.render('recaptcha-widget',{sitekey:siteKey,size:'compact'});};
-  if(window.grecaptcha?.render) draw();
-  else if(!document.getElementById('recaptcha-script')) {const script=document.createElement('script');script.id='recaptcha-script';script.src='https://www.google.com/recaptcha/api.js?render=explicit';script.async=true;script.defer=true;script.onload=draw;document.head.appendChild(script);}
-}
 let student = null;
 let professorClasses = [];
 let professorGradeQueue = [];
@@ -124,6 +112,9 @@ async function syncProfessorGrades() {
 }
 window.addEventListener('online',()=>{if(student?.role==='professor'){loadProfessorClasses().then(syncProfessorGrades);}});
 let currentFeature = null;
+let billingStage = 'overview';
+let tuitionMethod = 'qr';
+let tuitionRequest = null;
 let chatMessages = [];
 const chatStoreKey = 'omnira-gabay-chats-v1';
 let chats = [];
@@ -371,7 +362,7 @@ function gabay() {
 }
 function upload() {
   return `${brand()}<div class="eyebrow">Study resources</div><h1>Upload</h1><p class="intro">Keep notes and documents organized by subject.</p>
-    <div class="upload-panel"><div class="upload-panel-head">Add files to upload</div><div class="upload-drop" id="upload-drop"><span class="upload-clip">${icon('clip')}</span><strong>Add files to upload</strong><small>PDF, DOCX, PPTX or TXT · 4 MB max each</small><button type="button" class="select-files" data-action="select-files">Select files</button><input type="file" id="upload-file" accept=".pdf,.doc,.docx,.pptx,.txt" multiple hidden></div></div>
+    <p><a href="cloud.html" class="select-files">Open cloud workspace · sync with Flutter devices ↗</a></p><div class="upload-panel"><div class="upload-panel-head">Add files to upload</div><div class="upload-drop" id="upload-drop"><span class="upload-clip">${icon('clip')}</span><strong>Add files to upload</strong><small>PDF, DOCX, PPTX or TXT · 4 MB max each</small><button type="button" class="select-files" data-action="select-files">Select files</button><input type="file" id="upload-file" accept=".pdf,.doc,.docx,.pptx,.txt" multiple hidden></div></div>
     ${queuedFiles.length?`<div class="upload-queue">${queuedFiles.map(item=>`<div class="queue-row">${icon('clip')}<span class="queue-name">${escapeHtml(item.file.name)}<small>${formatBytes(item.file.size)}</small></span>${item.status==='saved'?`<span class="queue-status saved">${icon('check')} Saved</span>`:item.status==='failed'?`<span class="queue-status failed">${escapeHtml(item.error)}</span>`:`<span class="queue-status ready">${icon('check')} Ready</span>`}<button data-remove-file="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.file.name)}">×</button></div>`).join('')}</div>`:''}
     <div class="section-heading subject-heading"><h2>Subject folders</h2><button data-action="add-folder">${icon('plus')} Add folder</button></div>
     ${addFolderOpen?`<form id="folder-form" class="folder-form"><input class="field" name="name" maxlength="40" placeholder="e.g. Computer Programming" aria-label="Subject name" required autofocus><button class="primary" type="submit">Create</button></form>`:''}
@@ -475,15 +466,15 @@ function adminPage() {
 }
 function featureView(name) {
   const labels = {labs:'Computer Labs',reserve:'Reserve a PC',printing:'Printing',billing:'Bills & Receipts',schedule:'Schedule',materials:'Study Materials'};
-  return `${brand()}<button class="top-action" data-action="back-home" aria-label="Back to home" style="margin-bottom:18px">←</button><div class="eyebrow">Features</div><h1>${labels[name]}</h1><p class="intro">${name==='labs'?'See computer availability.':name==='reserve'?'Book a lab computer.':name==='printing'?'Send a campus print request.':name==='billing'?'Review your payments and receipts.':name==='schedule'?'See upcoming reservations.':'Keep your study files in one place.'}</p><div id="feature-content"><div class="simple-card"><strong>Loading…</strong></div></div>`;
+  const billingTitles={overview:'Bills & Receipts',detail:'Tuition balance',method:'Payment method',confirmation:'Payment request'};
+  return `${brand()}<button class="top-action" data-action="${name==='billing'&&billingStage!=='overview'?'billing-back':'back-home'}" aria-label="Back" style="margin-bottom:18px">←</button><div class="eyebrow">${name==='billing'?'Student billing':'Features'}</div><h1>${name==='billing'?billingTitles[billingStage]:labels[name]}</h1><p class="intro">${name==='labs'?'See computer availability.':name==='reserve'?'Book a lab computer.':name==='printing'?'Send a campus print request.':name==='billing'?'Review your balance, payment requests, and receipts.':name==='schedule'?'See upcoming reservations.':'Keep your study files in one place.'}</p><div id="feature-content"><div class="simple-card"><strong>Loading…</strong></div></div>`;
 }
 function render(preserveScroll=false) {
   if(authView !== 'app') {
     $('bottom-nav').parentElement.hidden = true;
     $('screen').classList.add('welcome-screen');
-    $('screen').innerHTML = authView==='welcome' ? `<div class="welcome-page"><div class="welcome-glow"></div><div class="welcome-content"><img src="assets/logo-transparent.png" alt="Omnira" class="welcome-logo"><h1>Welcome to Omnira</h1><p>Your campus resources, study tools, and activities in one place.</p><button class="welcome-primary" data-action="show-login">Get Started</button><div class="welcome-login">Already have an account? <button data-action="show-login">Log in</button></div></div></div>` : `<div class="login-page"><button class="login-back" data-action="show-welcome" aria-label="Back">‹</button><img src="assets/logo-transparent.png" alt="Omnira" class="login-brand"><h1>Welcome back</h1><p>Log in to your Omnira account.</p><div class="login-account-switch"><button type="button" data-demo-account="student">Student demo</button><button type="button" data-demo-account="professor">Professor demo</button><button type="button" data-demo-account="admin">Admin demo</button></div><form id="student-login"><label>Email<input name="email" type="email" value="student@omnira.test" required></label><label>Password<input name="password" type="password" value="demo123" required></label><div id="recaptcha-area"></div><button class="welcome-primary">Log in</button><div id="login-message" role="status"></div></form><small>Demo accounts use password demo123.</small></div>`;
+    $('screen').innerHTML = authView==='welcome' ? `<div class="welcome-page"><div class="welcome-glow"></div><div class="welcome-content"><img src="assets/logo-transparent.png" alt="Omnira" class="welcome-logo"><h1>Welcome to Omnira</h1><p>Your campus resources, study tools, and activities in one place.</p><button class="welcome-primary" data-action="show-login">Get Started</button><div class="welcome-login">Already have an account? <button data-action="show-login">Log in</button></div></div></div>` : `<div class="login-page"><button class="login-back" data-action="show-welcome" aria-label="Back">‹</button><img src="assets/logo-transparent.png" alt="Omnira" class="login-brand"><h1>Welcome back</h1><p>Log in to your Omnira account.</p><form id="student-login"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="welcome-primary">Log in</button><div id="login-message" role="status"></div></form></div>`;
     $('screen').scrollTop=0;
-    if(authView==='login') requestAnimationFrame(showRecaptcha);
     return;
   }
   $('bottom-nav').parentElement.hidden = false;
@@ -552,7 +543,13 @@ async function loadFeature(name) {
     } else if(name==='printing') {
       box.innerHTML='<form id="printing-form"><label class="field-label">File name</label><input class="field" name="filename" placeholder="Report.pdf" required><label class="field-label">Pages</label><input class="field" name="pages" type="number" min="1" value="1" required><label class="field-label">Copies</label><input class="field" name="copies" type="number" min="1" value="1" required><button class="primary">Submit print request</button></form><div id="feature-result"></div>';
     } else if(name==='billing') {
-      const payments=await api('/payments');box.innerHTML=payments.length?payments.map(x=>`<div class="simple-card"><strong>Receipt #${x.id}</strong><p>₱${Number(x.amount).toFixed(2)} · ${escapeHtml(x.method)}</p></div>`).join(''):'<div class="simple-card"><strong>No payments yet</strong><p>Your receipts will appear here.</p></div>';
+      const [tuition,payments]=await Promise.all([api('/tuition/balance'),api('/payments')]);
+      const money=amount=>`₱${(Number(amount)/100).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+      const amount=money(tuition.amount_centavos);
+      if(billingStage==='overview') box.innerHTML=`<button class="tuition-summary" data-action="tuition-detail"><span class="tuition-badge">Pending tuition balance</span><strong>${amount}</strong><span>View balance and payment options ${icon('arrow')}</span></button><div class="section-heading"><h2>Receipts</h2></div>${payments.length?payments.map(x=>`<div class="simple-card"><strong>Receipt #${x.id}</strong><p>₱${Number(x.amount).toFixed(2)} · ${escapeHtml(x.method)}</p></div>`).join(''):'<div class="simple-card"><strong>No receipts yet</strong><p>Confirmed payments will appear here.</p></div>'}`;
+      else if(billingStage==='detail') box.innerHTML=`<div class="tuition-detail-card"><span>Pending tuition balance</span><strong>${amount}</strong><p>${tuition.amount_centavos>0?'Your outstanding balance is ready to review.':'You have no pending tuition balance.'}</p></div>${tuition.amount_centavos>0?'<button class="primary tuition-main-action" data-action="tuition-pay">Pay online</button>':''}<div class="section-heading"><h2>Payment requests</h2></div>${tuition.payment_requests.length?tuition.payment_requests.map(item=>`<div class="simple-card tuition-request-row"><strong>#${item.id} · ${escapeHtml(item.method.replace('_',' '))}</strong><span>${money(item.amount_centavos)}</span><small>${escapeHtml(item.status)}</small></div>`).join(''):'<div class="simple-card"><p>No payment requests yet.</p></div>'}<p class="small-note">Demo balance. Payment requests do not reduce your balance until a verified provider confirms payment.</p>`;
+      else if(billingStage==='method') box.innerHTML=`<div class="tuition-detail-card compact"><span>Amount to pay</span><strong>${amount}</strong></div><form id="tuition-payment-form"><h2>Choose a payment method</h2>${[['qr','QR payment'],['debit_card','Debit card'],['ewallet','E-wallet']].map(([value,label])=>`<label class="tuition-method"><input type="radio" name="method" value="${value}" ${tuitionMethod===value?'checked':''}><span>${label}</span>${icon('arrow')}</label>`).join('')}<button class="primary tuition-main-action" ${tuition.amount_centavos<=0?'disabled':''}>Continue</button></form><p class="small-note">Demo checkout only. No card details are collected and no money will be charged.</p>`;
+      else box.innerHTML=`<div class="tuition-detail-card"><span>Request created</span><strong>#${tuitionRequest?.id||'—'}</strong><p>${escapeHtml(tuitionRequest?.message||'Your request is pending.')}</p></div><button class="primary tuition-main-action" data-action="tuition-detail">View balance</button><p class="small-note">A real QR, debit card, or e-wallet payment requires a connected payment provider.</p>`;
     } else if(name==='schedule') {
       box.innerHTML=scheduleImagePanel()+'<div id="schedule-reservations"><div class="simple-card"><strong>Loading reservations…</strong></div></div>';
       const reservations=await api('/reservations');
@@ -613,8 +610,6 @@ document.addEventListener('click', async event => {
   if(event.target.closest('[data-action="grade-report"]')) {transitionPage(()=>{adminSection='grade-report';});return;}
   if(event.target.closest('[data-action="print-schedule"]') && student?.role==='admin') {window.print();return;}
   if(event.target.closest('[data-action="admin-home"]')) {transitionPage(()=>{adminSection=null;});return;}
-  const demoAccount=event.target.closest('[data-demo-account]');
-  if(demoAccount) {const form=$('student-login');if(form){form.elements.email.value=`${demoAccount.dataset.demoAccount}@omnira.test`;form.elements.password.value='demo123';$('login-message').textContent='';}return;}
   if(event.target.closest('[data-action="remove-schedule-image"]')) {localStorage.removeItem(scheduleImageKey);if(currentFeature==='schedule') loadFeature('schedule');return;}
   if(event.target.closest('[data-action="home-next-class"]')) {document.getElementById('class-schedule')?.scrollIntoView({behavior:'smooth',block:'center'});return;}
   if(event.target.closest('[data-action="professor-paperworks"]')) {document.getElementById('professor-paperworks')?.scrollIntoView({behavior:'smooth',block:'center'});return;}
@@ -629,10 +624,13 @@ document.addEventListener('click', async event => {
   const feature = event.target.closest('[data-feature]');
   if(feature) {
     const destination = feature.dataset.feature;
-    transitionPage(()=>{currentFeature=destination;});
+    transitionPage(()=>{currentFeature=destination;if(destination==='billing'){billingStage='overview';tuitionRequest=null;}});
     return;
   }
   if(event.target.closest('[data-action="back-home"]')) {transitionPage(()=>{currentFeature=null;active=1;});return;}
+  if(event.target.closest('[data-action="billing-back"]')) {transitionPage(()=>{billingStage=billingStage==='method'?'detail':'overview';});return;}
+  if(event.target.closest('[data-action="tuition-detail"]')) {transitionPage(()=>{billingStage='detail';});return;}
+  if(event.target.closest('[data-action="tuition-pay"]')) {transitionPage(()=>{billingStage='method';});return;}
   if(event.target.closest('[data-action="profile-back"]')) {profileDetail=null;render();return;}
   const profileSetting=event.target.closest('[data-profile-detail]');
   if(profileSetting) {profileDetail=profileSetting.dataset.profileDetail;render();return;}
@@ -702,6 +700,17 @@ document.addEventListener('click', async event => {
   if(event.target.closest('[data-action="notifications"]')) alert('No new notifications.');
 });
 document.addEventListener('submit', async event => {
+  if(event.target.id==='tuition-payment-form') {
+    event.preventDefault();
+    const method=new FormData(event.target).get('method');
+    if(!['qr','debit_card','ewallet'].includes(method)) return;
+    tuitionMethod=method;
+    const button=event.target.querySelector('button[type="submit"],button:not([type])');
+    if(button) button.disabled=true;
+    try {tuitionRequest=await post('/tuition/payment-requests',{method});transitionPage(()=>{billingStage='confirmation';});}
+    catch(error) {if(button) button.disabled=false;const box=$('feature-content');if(box) box.insertAdjacentHTML('beforeend',`<p class="small-note" role="alert">${escapeHtml(error.message)}</p>`);}
+    return;
+  }
   if(event.target.matches('.professor-meeting-form')) {
     event.preventDefault();
     const form=event.target, classId=Number(form.dataset.classId), url=form.elements.url.value.trim();
@@ -881,12 +890,8 @@ document.addEventListener('submit', async event => {
   if(event.target.id!=='student-login') return;
   event.preventDefault();
   const values=Object.fromEntries(new FormData(event.target));
-  if(window.OMNIRA_RECAPTCHA_SITE_KEY) {
-    values.recaptcha_token=window.grecaptcha?.getResponse(recaptchaWidget)||'';
-    if(!values.recaptcha_token) {if($('login-message')) $('login-message').textContent='Complete verification first.';return;}
-  } else if(!$('demo-verified')?.checked) {if($('login-message')) $('login-message').textContent='Check the preview verification box first.';return;}
   try { student=await window.omnira.request('/auth/login',{method:'POST',body:JSON.stringify(values)});active=0;authView='app';if(student.role==='professor'){restoreProfessorData();loadProfessorClasses().then(syncProfessorGrades);}render(); }
-  catch { if(!window.OMNIRA_RECAPTCHA_SITE_KEY && values.password==='demo123' && ['student@omnira.test','professor@omnira.test','admin@omnira.test'].includes(values.email)){const role=values.email.split('@')[0];student={id:role==='student'?1:role==='professor'?2:3,name:role==='admin'?'Campus Admin':role==='professor'?'Prof. Reyes':'Alex Student',email:values.email,role};active=0;authView='app';if(role==='professor'){restoreProfessorData();loadProfessorClasses().then(syncProfessorGrades);}render();} else if($('login-message')) $('login-message').textContent='Could not log in. Check your details and try again.'; }
+  catch(error) { if($('login-message')) $('login-message').textContent=error.message||'Could not log in. Check your connection and try again.'; }
 });
 render();
 setInterval(()=>{if(authView==='app' && active===0) updateNextClass();},30000);

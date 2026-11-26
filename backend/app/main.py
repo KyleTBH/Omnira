@@ -1,23 +1,55 @@
 from datetime import datetime, timezone
 from math import ceil
 import os
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-import json
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request as WebRequest
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .db import connection, init_db
+from .platform_db import init_platform_db
+from .security import router as auth_router, resolve_token, issue_session, check_password, migrate_passwords
+from .sync import router as sync_router
+from .cloud import router as cloud_router
+from starlette.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 
-app = FastAPI(title='Omnira Demo API', version='0.1.0')
-app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
+app = FastAPI(title='Omnira API', version='0.2.0')
+
 
 @app.on_event('startup')
-def startup(): init_db()
+def startup():
+    if os.getenv('OMNIRA_SKIP_INIT', '').lower() != 'true':
+        init_db()
+        init_platform_db()
+        migrate_passwords()
+
+
+@app.middleware('http')
+async def authenticated_identity(request: WebRequest, call_next):
+    protected = any(request.url.path == prefix or request.url.path.startswith(prefix + '/') for prefix in ('/auth/me', '/auth/logout', '/dashboard', '/computers', '/users', '/professor', '/reservations', '/sessions', '/printing', '/payments', '/tuition', '/receipts', '/maintenance', '/analytics', '/academic', '/reviewer', '/sync', '/cloud'))
+    # Discard caller-supplied identities even on unprotected or future routes.
+    request.scope['headers'] = [(key, value) for key, value in request.scope['headers'] if key.lower() != b'x-user-id']
+    if protected and request.method != 'OPTIONS':
+        authorization = request.headers.get('authorization', '')
+        if not authorization.startswith('Bearer '):
+            return JSONResponse(status_code=401, content={'detail': 'Sign in again to continue'})
+        user = await run_in_threadpool(resolve_token, authorization[7:])
+        if not user:
+            return JSONResponse(status_code=401, content={'detail': 'Session expired. Sign in again'})
+        request.state.user = user
+        # All existing role/ownership checks receive the verified identity.
+        request.scope['headers'] = [(key, value) for key, value in request.scope['headers'] if key.lower() != b'x-user-id'] + [(b'x-user-id', str(user['id']).encode())]
+    return await call_next(request)
+
+
+app.add_middleware(CORSMiddleware, allow_origins=[origin.strip() for origin in os.getenv('OMNIRA_CORS_ORIGINS', 'http://127.0.0.1:5500,http://localhost:5500,http://127.0.0.1:8080,http://localhost:8080').split(',') if origin.strip()], allow_methods=['*'], allow_headers=['*'])
+
+app.include_router(auth_router)
+app.include_router(sync_router)
+app.include_router(cloud_router)
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def row(value): return dict(value) if value else None
@@ -32,7 +64,6 @@ def require_user(user_id: int | None, roles=None):
 class Login(BaseModel):
     email: str
     password: str
-    recaptcha_token: str | None = None
 class ReservationIn(BaseModel):
     computer_id: int
     starts_at: datetime
@@ -47,6 +78,8 @@ class PaymentIn(BaseModel):
     item_type: Literal['session', 'print']
     item_id: int
     method: Literal['demo_qr', 'cash'] = 'demo_qr'
+class TuitionPaymentRequestIn(BaseModel):
+    method: Literal['qr', 'debit_card', 'ewallet']
 class MaintenanceIn(BaseModel):
     computer_id: int
     note: str = Field(min_length=3)
@@ -61,22 +94,15 @@ class MeetingLinkIn(BaseModel):
     url: str = Field(max_length=500)
 
 @app.get('/health')
-def health(): return {'ok': True}
+def health(): return {'ok': True, 'instance': os.getenv('OMNIRA_INSTANCE_ID', 'local')}
 
 @app.post('/auth/login')
 def login(payload: Login):
-    secret = os.getenv('OMNIRA_RECAPTCHA_SECRET_KEY')
-    if secret:
-        if not payload.recaptcha_token: raise HTTPException(400, 'Complete verification first')
-        request = Request('https://www.google.com/recaptcha/api/siteverify', data=urlencode({'secret': secret, 'response': payload.recaptcha_token}).encode(), method='POST')
-        try:
-            with urlopen(request, timeout=5) as response: verification = json.load(response)
-        except Exception: raise HTTPException(503, 'Verification is unavailable. Try again')
-        if not verification.get('success'): raise HTTPException(400, 'Verification failed. Try again')
     with connection() as db:
-        user = row(db.execute('SELECT id,name,email,role FROM users WHERE email=? AND password=?', (payload.email, payload.password)).fetchone())
+        record = row(db.execute('SELECT id,name,email,role,password FROM users WHERE email=?', (payload.email.strip().lower(),)).fetchone())
+    user = {key: value for key, value in record.items() if key != 'password'} if record and check_password(payload.password, record['password']) else None
     if not user: raise HTTPException(401, 'Incorrect email or password')
-    return user
+    return issue_session(user)
 
 @app.get('/dashboard')
 def dashboard(x_user_id: int | None = Header(default=None)):
@@ -250,6 +276,25 @@ def payments(x_user_id: int | None = Header(default=None)):
         if user['role'] == 'student': sql += ' WHERE user_id=?'; args = (user['id'],)
         return [row(r) for r in db.execute(sql+' ORDER BY id DESC',args)]
 
+@app.get('/tuition/balance')
+def tuition_balance(x_user_id: int | None = Header(default=None)):
+    user = require_user(x_user_id, ['student'])
+    with connection() as db:
+        balance = db.execute('SELECT amount_centavos,updated_at FROM tuition_balances WHERE student_id=?', (user['id'],)).fetchone()
+        requests = [row(item) for item in db.execute('SELECT id,amount_centavos,method,status,created_at FROM tuition_payment_requests WHERE student_id=? ORDER BY id DESC', (user['id'],))]
+    return {'amount_centavos':balance['amount_centavos'] if balance else 0,'currency':'PHP','updated_at':balance['updated_at'] if balance else None,'payment_requests':requests,'demo':True}
+
+@app.post('/tuition/payment-requests')
+def create_tuition_payment_request(payload: TuitionPaymentRequestIn, x_user_id: int | None = Header(default=None)):
+    user = require_user(x_user_id, ['student'])
+    with connection(write=True) as db:
+        balance = db.execute('SELECT amount_centavos FROM tuition_balances WHERE student_id=?', (user['id'],)).fetchone()
+        if not balance or balance['amount_centavos'] <= 0: raise HTTPException(400, 'No pending tuition balance')
+        amount = balance['amount_centavos']
+        created = now()
+        item = db.execute('INSERT INTO tuition_payment_requests(student_id,amount_centavos,method,status,created_at) VALUES(?,?,?,?,?)', (user['id'],amount,payload.method,'pending',created))
+    return {'id':item.lastrowid,'amount_centavos':amount,'method':payload.method,'status':'pending','created_at':created,'demo':True,'message':'Demo payment request created. No money was charged.'}
+
 @app.post('/payments')
 def pay(payload: PaymentIn, x_user_id: int | None = Header(default=None)):
     user = require_user(x_user_id, ['student','professor'])
@@ -301,3 +346,24 @@ def reviewer(payload: ReviewerIn, x_user_id: int | None = Header(default=None)):
     require_user(x_user_id,['student','professor'])
     lines=[s.strip() for s in payload.notes.replace('\n','.').split('.') if s.strip()]
     return {'subject':payload.subject,'reviewer':[f'{i+1}. {line}' for i,line in enumerate(lines[:10])], 'note':'Offline rule-based preview; no AI model connected'}
+
+
+@app.get('/ready')
+def ready():
+    from .object_storage import get_store
+    try:
+        with connection() as db:
+            db.execute('SELECT revision FROM sync_heads LIMIT 1').fetchone()
+        if not get_store().ready():
+            raise RuntimeError('Storage is not ready')
+    except Exception:
+        raise HTTPException(503, 'A required service is unavailable')
+    return {'ok': True}
+
+
+# Serve the browser app from the same origin, including behind the Go gateway.
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+_web = Path(__file__).resolve().parents[2] / 'web'
+if _web.is_dir():
+    app.mount('/', StaticFiles(directory=_web, html=True), name='web')

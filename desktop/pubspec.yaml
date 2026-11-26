@@ -1,0 +1,13 @@
+name: omnira_desktop
+description: Omnira Flutter desktop application.
+publish_to: none
+version: 0.2.0+1
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  omnira_app:
+    path: ../packages/omnira_app
+flutter:
+  uses-material-design: true

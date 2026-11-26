@@ -1,15 +1,13 @@
-name: omnira
-description: Omnira smart campus mobile prototype
+name: omnira_mobile
+description: Omnira Android and iOS application.
 publish_to: none
-version: 0.1.0+1
+version: 0.2.0+1
 environment:
-  sdk: '>=3.3.0 <4.0.0'
+  sdk: '>=3.6.0 <4.0.0'
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.2
-  shared_preferences: ^2.3.3
+  omnira_app:
+    path: ../packages/omnira_app
 flutter:
   uses-material-design: true
-  assets:
-    - assets/logo.png
